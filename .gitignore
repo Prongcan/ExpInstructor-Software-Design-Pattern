@@ -1,40 +1,86 @@
-# Project ignores
-/data3/guofang/peirongcan/graph-idea/data
-/data3/guofang/peirongcan/graph-idea/RAG_baseline_review_sentence/embeddings
-/data3/guofang/peirongcan/graph-idea/RAG_baseline_review_sentence/all_evidence_embeddings.json
-/data3/guofang/peirongcan/graph-idea/RAG_baseline_review_sentence/embedding_index.json
-/data3/guofang/peirongcan/graph-idea/RAG_baseline_review_sentence/embedding_stats.json
-/data3/guofang/peirongcan/graph-idea/result_v2
-/data3/guofang/peirongcan/graph-idea/Retrive_Generate/.embeddings
-
-# Large data and outputs
-data/
-result/
-result_v2/
-Retrive_Generate/.embeddings
-RAG_baseline_review_sentence/embeddings
-RAG_baseline_review_sentence/all_evidence_embeddings.json
-RAG_baseline_review_sentence/embedding_index.json
-RAG_baseline_review_sentence/embedding_stats.json
-
-
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
 *.egg-info/
-.python-version
-.venv/
+.installed.cfg
+*.egg
+
+# Virtual Environment
 venv/
+env/
+ENV/
+.venv
 
-# Editors/OS
-.DS_Store
-.idea/
+# IDE
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
 
-# Caches
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+*.log
+
+# Database
+*.db
+*.sqlite
+
+# Cache
 .cache/
-.mypy_cache/
 .pytest_cache/
 
+# Model files
+*.pt
+*.pth
+*.h5
+*.pkl
+*.model
 
+# Data files (if large)
+data/*/
+*.csv
+*.json
+!**/requirements.txt
+!**/package.json
+
+# Embeddings cache
+Retrive_Generate/.embeddings/
+
+# Results
+results/
+*.png
+*.jpg
+*.jpeg
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
+
+# OS
+Thumbs.db
+.DS_Store

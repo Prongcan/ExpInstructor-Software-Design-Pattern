@@ -30,6 +30,7 @@ if PROJECT_ROOT not in sys.path:
 from service.llm_factory import get_embedding_client
 from service.llm_adapters import BGEAdapter
 from service.interfaces import IEmbeddingClient
+from service.strategies import RetrievalRankingStrategy, CosineSimilarityRankingStrategy
 
 _EMBED_CLIENT: Optional[IEmbeddingClient] = None
 BGE_M3_AVAILABLE = False
@@ -59,7 +60,7 @@ def embed_texts(texts: list[str], model: str = "BAAI/bge-m3") -> list[list[float
     return client.embed_texts(texts, model=model)
 
 class GraphRetrievalSystem:
-    def __init__(self, graph_file, gpu_device="auto", batch_size=256, build_index_immediately=True):
+    def __init__(self, graph_file, gpu_device="auto", batch_size=256, build_index_immediately=True, ranking_strategy: Optional[RetrievalRankingStrategy] = None):
         """
         Initialize the graph retrieval system
         
@@ -68,6 +69,7 @@ class GraphRetrievalSystem:
             gpu_device: GPU device such as "auto", "cuda:0", "cuda:1"
             batch_size: Batch size; larger batches can improve GPU utilization
             build_index_immediately: Whether to build the index right away, default True
+            ranking_strategy: Ranking strategy to use (default: CosineSimilarityRankingStrategy)
         """
         self.G = nx.DiGraph()
         self.gpu_device = gpu_device
@@ -81,6 +83,8 @@ class GraphRetrievalSystem:
         else:
             self.gpu_device = gpu_device
         self.batch_size = batch_size
+        # Refactored with Strategy Pattern: use ranking strategy
+        self.ranking_strategy = ranking_strategy or CosineSimilarityRankingStrategy()
         self.load_graph(graph_file)
         if build_index_immediately:
             self.build_index()
@@ -342,32 +346,34 @@ class GraphRetrievalSystem:
         return all_embeddings
 
     def _cosine_topk(self, query_vec: List[float], matrix: List[List[float]], k: int = 10) -> List[int]:
+        """
+        Legacy method for backward compatibility.
+        Refactored with Strategy Pattern: now uses ranking_strategy internally.
+        """
         if query_vec is None or matrix is None or len(matrix) == 0:
             return []
         
-        # Compute cosine similarity
-        similarities = []
-        for vec in matrix:
-            # Dot product
-            dot_product = sum(a * b for a, b in zip(query_vec, vec))
-            # Vector magnitude
-            query_norm = sum(a * a for a in query_vec) ** 0.5
-            vec_norm = sum(a * a for a in vec) ** 0.5
-            
-            if query_norm == 0 or vec_norm == 0:
-                similarity = 0.0
-            else:
-                similarity = dot_product / (query_norm * vec_norm)
-            similarities.append(similarity)
+        # Use strategy pattern for ranking
+        # Create dummy names for compatibility
+        dummy_names = [f"item_{i}" for i in range(len(matrix))]
+        ranked = self.ranking_strategy.rank_nodes(query_vec, matrix, dummy_names, k=k)
         
-        # Get top-k indices
-        indexed_sims = [(i, sim) for i, sim in enumerate(similarities)]
-        indexed_sims.sort(key=lambda x: x[1], reverse=True)
-        return [i for i, _ in indexed_sims[:k]]
+        # Extract indices from ranked results
+        indices = []
+        for result in ranked:
+            # Extract index from dummy name (format: "item_0", "item_1", etc.)
+            try:
+                idx = int(result["node"].split("_")[1])
+                indices.append(idx)
+            except (IndexError, ValueError):
+                continue
+        
+        return indices
 
     def semantic_vector_search(self, query: str, top_k: int = 10) -> Dict[str, Any]:
         """
         Perform semantic vector retrieval against both entity texts and edge texts.
+        Refactored with Strategy Pattern: uses ranking_strategy for ranking.
         Returns the top-k candidates for entities and edges.
         """
         if self._entity_embeddings is None and self._edge_embeddings is None:
@@ -381,13 +387,28 @@ class GraphRetrievalSystem:
         except Exception as e:
             return {"error": f"Failed to generate query vector: {e}"}
 
-        # Entity top-k
-        entity_indices = self._cosine_topk(q_vec, self._entity_embeddings, k=top_k) if self._entity_embeddings is not None else []
-        entity_hits = [self._entity_names[i] for i in entity_indices]
+        # Entity top-k using strategy pattern
+        if self._entity_embeddings is not None:
+            ranked_nodes = self.ranking_strategy.rank_nodes(
+                q_vec, self._entity_embeddings, self._entity_names, k=top_k
+            )
+            entity_hits = [result["node"] for result in ranked_nodes]
+        else:
+            entity_hits = []
 
-        # Edge top-k
-        edge_indices = self._cosine_topk(q_vec, self._edge_embeddings, k=top_k) if self._edge_embeddings is not None else []
-        edge_hits = [self._edge_triplets[i] for i in edge_indices]
+        # Edge top-k using strategy pattern
+        if self._edge_embeddings is not None:
+            ranked_edges = self.ranking_strategy.rank_edges(
+                q_vec, self._edge_embeddings, self._edge_triplets, k=top_k
+            )
+            edge_hits = [(r["source"], r["target"], {
+                "relationship": r["relationship"],
+                "evidence": r["evidence"],
+                "paper_id": r.get("paper_id", ""),
+                "review_id": r.get("review_id", "")
+            }) for r in ranked_edges]
+        else:
+            edge_hits = []
 
         return {
             "query": query,
@@ -801,6 +822,7 @@ class GraphRetrievalSystem:
     def search_similar_node(self, query: str, k: int = 10) -> List[Dict[str, Any]]:
         """
         Retrieve the top-k nodes by semantic similarity.
+        Refactored with Strategy Pattern: uses ranking_strategy for ranking.
         Returns: [{"node": "<name>", "similarity": <score>}, ...]
         """
         if self._entity_embeddings is None or not self._entity_names:
@@ -812,35 +834,19 @@ class GraphRetrievalSystem:
         except Exception:
             return []
 
-        # 2. Compute cosine similarity
-        similarities = []
-        query_norm = sum(a * a for a in q_vec) ** 0.5
-        if query_norm == 0:
-            return []
-
-        for idx, vec in enumerate(self._entity_embeddings):
-            vec_norm = sum(a * a for a in vec) ** 0.5
-            if vec_norm == 0:
-                similarity = 0.0
-            else:
-                dot_product = sum(a * b for a, b in zip(q_vec, vec))
-                similarity = dot_product / (query_norm * vec_norm)
-
-            similarities.append({
-                "node": self._entity_names[idx],
-                "similarity": similarity
-            })
-
-        # 3. Sort by similarity descending
-        similarities.sort(key=lambda x: x["similarity"], reverse=True)
-
-        # 4. Return the top-k results
-        return similarities[:k]
+        # 2. Use strategy pattern for ranking
+        return self.ranking_strategy.rank_nodes(
+            q_vec, 
+            self._entity_embeddings, 
+            self._entity_names, 
+            k=k
+        )
 
 
     def search_similar_edge(self, query: str, k: int = 10) -> List[Dict[str, Any]]:
         """
         Retrieve the top-k edges by semantic similarity.
+        Refactored with Strategy Pattern: uses ranking_strategy for ranking.
         Returns:
             [
                 {
@@ -864,39 +870,13 @@ class GraphRetrievalSystem:
         except Exception:
             return []
         
-        # Compute similarities and grab the top-k
-        similarities = []
-        for vec in self._edge_embeddings:
-            # Dot product
-            dot_product = sum(a * b for a, b in zip(q_vec, vec))
-            # Vector magnitude
-            query_norm = sum(a * a for a in q_vec) ** 0.5
-            vec_norm = sum(a * a for a in vec) ** 0.5
-            
-            if query_norm == 0 or vec_norm == 0:
-                similarity = 0.0
-            else:
-                similarity = dot_product / (query_norm * vec_norm)
-            similarities.append(similarity)
-        
-        # Get top-k
-        indexed_sims = [(i, sim) for i, sim in enumerate(similarities)]
-        indexed_sims.sort(key=lambda x: x[1], reverse=True)
-        
-        results = []
-        for idx, similarity in indexed_sims[:k]:
-            source, target, attrs = self._edge_triplets[idx]
-            results.append({
-                "source": source,
-                "target": target,
-                "relationship": attrs.get('relationship', ''),
-                "evidence": attrs.get('evidence', ''),
-                "similarity": similarity,
-                "paper_id": attrs.get('paper_id', ''),
-                "review_id": attrs.get('review_id', '')
-            })
-        
-        return results
+        # Use strategy pattern for ranking
+        return self.ranking_strategy.rank_edges(
+            q_vec,
+            self._edge_embeddings,
+            self._edge_triplets,
+            k=k
+        )
 
     def search_similar_evidence(self, query: str, k: int = 10) -> List[Dict[str, Any]]:
         """

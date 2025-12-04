@@ -5,9 +5,10 @@ Refactored with Factory Method Pattern and Adapter Pattern.
 
 from __future__ import annotations
 
-from typing import List, Protocol
+from typing import List, Protocol, runtime_checkable
 
 
+@runtime_checkable
 class IChatClient(Protocol):
     """Chat client interface."""
 
@@ -15,6 +16,7 @@ class IChatClient(Protocol):
         """Return a single string response for the given prompt."""
 
 
+@runtime_checkable
 class IEmbeddingClient(Protocol):
     """Embedding client interface."""
 

@@ -12,35 +12,37 @@ def _get_client():
 
 def chat(prompt, pdf_url, model: str = "gpt-4o"):
     client = _get_client()
-    response = client.responses.create(
-        model="gpt-4o-mini",
-        input=[
+    # 标准 OpenAI API：使用 chat.completions.create
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
             {
                 "role": "user",
                 "content": [
                     {
-                        "type": "input_text",
+                        "type": "text",
                         "text": prompt,
                     },
                     {
-                        "type": "input_file",
-                        "file_url": pdf_url,
+                        "type": "image_url",
+                        "image_url": {"url": pdf_url},
                     },
                 ],
             }
         ],
     )
-    return response.output_text
+    return response.choices[0].message.content
 
 
 def chat_simple(prompt: str, model: str = "gpt-4o") -> str:
     client = _get_client()
-    response = client.responses.create(
+    # 标准 OpenAI API：使用 chat.completions.create
+    response = client.chat.completions.create(
         model=model,
-        temperature = 0.1,
-        input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+        temperature=0.1,
+        messages=[{"role": "user", "content": prompt}],
     )
-    return response.output_text
+    return response.choices[0].message.content
 
 
 def embed_texts(texts: list[str], model: str = "text-embedding-3-small") -> list[list[float]]:

@@ -90,9 +90,14 @@ def search_similar_node_and_edge(
             Please:
             1. Sort the results by combined node and edge similarity (highest first)
             2. Analyze if the results contain information that closely matches the query
-            3. Provide a natural language summary...
+            3. Provide a natural language summary that analyzes:
+            - Relevance assessment: How well do the results match the query? Are they highly relevant, moderately relevant, or mostly irrelevant?
+            - Prior experience evaluation: Based on the quality and relevance of results, does this indicate rich prior experience, moderate experience, or limited experience in this area?
+            - Overall insights: What do these results collectively suggest about the research domain, common challenges, or established patterns?
             
-            Output JSON with the same structure as the input results, but add a "summary" field.
+            Write a comprehensive summary that naturally explains what the retrieved results reveal about the query topic and the existing knowledge base.
+            
+            Output JSON with the same structure as the input results, but add a "summary" field at the end containing the analysis.
             """
             print("LLM re-ranking and summarization in progress...")
             chat_simple = _chat_client.chat(prompt)  

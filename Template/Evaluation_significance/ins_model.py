@@ -11,34 +11,33 @@ from langgraph.prebuilt import create_react_agent
 from Retrive_Generate.graph_retrieval_system import GraphRetrievalSystem
 from service.llm_factory import get_chat_client  # Refactored with Factory Method Pattern
 
-# Lazy initialization of graph retrieval system
 graph_file = "result_v2/all_graphs_cleaned.json"
 retrieval_system = None
 _retrieval_system_lock = threading.Lock()
 _chat_client = get_chat_client()  # Refactored with Factory Method Pattern
 
 def get_retrieval_system():
-    """Get graph retrieval system instance (lazy initialization, thread-safe)"""
+    """Get the graph retrieval system instance (lazy initialization, thread-safe)"""
     global retrieval_system
     if retrieval_system is None:
         with _retrieval_system_lock:
-            # Double-check locking pattern
+            # Double-checked locking pattern
             if retrieval_system is None:
                 print("Initializing graph retrieval system...")
                 
-                # Preload BGE-M3 model to ensure it's only loaded once
+                # Preload the BGE-M3 model to ensure it is loaded only once
                 try:
                     from service.BGE_M3 import preload_model
                     preload_model("BAAI/bge-m3")
                 except ImportError:
-                    print("BGE-M3 preload failed, will use ChatGPT embedding")
+                    print("BGE-M3 preloading failed, will use ChatGPT embedding")
                 
-                # Don't build index first, only load graph data
+                # Do not build the index yet, just load the graph data
                 retrieval_system = GraphRetrievalSystem(graph_file, build_index_immediately=False)
-                print("Graph data loaded, starting index construction...")
-                # Delay index construction so embedding model is only loaded once
+                print("Graph data loading complete, starting to build index...")
+                # Delay building the index so that the embedding model is loaded only once
                 retrieval_system.build_index()
-                print("Graph retrieval system initialization completed")
+                print("Graph retrieval system initialization complete")
     return retrieval_system
 
 @tool
@@ -76,76 +75,56 @@ def search_similar_node_and_edge(
         data = response.json()
         if "result" in data:
             results = data["result"]
-            # 8. Call LLM for final reranking and summarization
+            # 8. 调用 LLM 进行最终重排序和总结
             prompt = f"""
-            You are an innovation evaluator. Your task is to assess the novelty/innovation level of an entity based on retrieved evidence.
-            The user's query intent: find evidence about entity [{node_query}] and relation [{edge_query}] to evaluate its innovation level.
+            You are a research significance evaluator. Your task is to assess the **significance (importance and impact)** of an entity based on retrieved evidence.
+            The user's query intent: find evidence about entity [{node_query}] and relation [{edge_query}] to evaluate its **significance level**.
             Retrieved Results: {str(results)}
-            
-            **Core Task: Innovation Assessment**
-            This summary is specifically designed to determine the innovation level of the queried entity. 
-            You need to understand the query's intent by analyzing the retrieved results to determine whether the entity [{node_query}] is primarily a **PROBLEM** or a **METHOD**, then assess innovation accordingly.
-            
-            **Step 1: Determine Entity Type (Problem vs Method)**
-            Based on the retrieved results, analyze the context and usage patterns to determine:
-            - If [{node_query}] appears more frequently as a **PROBLEM** (something to be solved, addressed, or researched) → Focus ONLY on problem innovation assessment
-            - If [{node_query}] appears more frequently as a **METHOD** (a technique, approach, or solution used to solve problems) → Focus ONLY on method innovation assessment
-            
-            **Step 2: Innovation Assessment Based on Entity Type**
-            
-            **If the entity is a PROBLEM:**
-            - **High Innovation**: The problem is rarely addressed, novel, or has not been effectively solved
-            - **Moderate Innovation**: The problem has been partially addressed but remains challenging
-            - **Low Innovation**: The problem has been solved many times, is well-researched, or is a common/standard problem
-            
-            **If the entity is a METHOD:**
-            - **High Innovation**: The method is novel, sophisticated, and has not been widely used or applied
-            - **Moderate Innovation**: The method has some unique aspects but shares similarities with existing approaches
-            - **Low Innovation**: The method is common, widely used, basic/low-level (e.g., "Prompt engineering"), or is standard practice in the field
-            
-            **Please:**
-            1. Sort the results by relevance of the query's intent.
-            2. **First, determine entity type**: Analyze the retrieved results to determine if [{node_query}] is primarily a PROBLEM or a METHOD.
-            3. **Then, provide a comprehensive innovation assessment summary** that includes:
-            
-            **Summary Structure:**
-            - **Entity Type Determination**: 
-              * Clearly state whether [{node_query}] is identified as a PROBLEM or a METHOD based on the retrieved results
-              * Explain the reasoning for this determination (cite evidence from results)
-              * If determined as PROBLEM: "Based on the results, [{node_query}] is identified as a PROBLEM. The assessment will focus solely on the problem's innovation level."
-              * If determined as METHOD: "Based on the results, [{node_query}] is identified as a METHOD. The assessment will focus solely on the method's innovation level."
-            
-            - **Innovation Level Assessment**: Based on the entity type and retrieved results, determine the innovation level:
-              * For PROBLEM: Assess whether the problem is novel/rarely addressed (high), partially addressed (moderate), or frequently solved (low)
-              * For METHOD: Assess whether the method is novel/sophisticated (high), has unique aspects (moderate), or is common/basic (low)
-            
-            - **Evidence-Based Reasoning**: 
-              * Cite specific evidence from the results to support your innovation assessment
-              * For PROBLEM: Count how many times the problem has been addressed/solved (if many → low innovation)
-              * For METHOD: Identify if the method is common/basic/widely used (if yes → low innovation), or assess its sophistication level
-            
-            - **Innovation Indicators**:
-              * For PROBLEM: Problem novelty - Is this problem frequently addressed? (Many solutions → low innovation)
-              * For METHOD: Method novelty and sophistication - Has this method been widely used? Is it basic/common or advanced? (Basic/common → low innovation)
-            
-            - **Conclusion**: Summarize what the retrieved results reveal about the innovation level of the queried entity (PROBLEM or METHOD), and explain how this relates to the overall novelty assessment.
-            
-            **Important Notes:**
-            - Focus on innovation/novelty assessment, not just relevance
-            - Be critical: If results show the problem has been solved many times or the method is common → explicitly state LOW innovation
-            - If the method is basic (like "Prompt engineering") or widely used → explicitly state LOW innovation
-            - Connect the evidence directly to innovation level judgment
-            
+
+            Your evaluation process should follow three main steps:
+
+            **Step 1: Understand the User’s Query Intent**
+
+            Before analyzing the results, first interpret what the user is trying to investigate through the given `node_query` and `edge_query`.  
+            - The `node_query` represents the research entity (for example, a problem like “LLM hallucination”).  
+            - The `edge_query` represents the relationship or aspect being examined (for example, “how this problem has been solved”).  
+            Together, these queries reveal the user’s intention — for instance, to explore **how well the hallucination problem in large language models has been addressed**.
+
+            **Step 2: Analyze the Retrieved Evidence**
+            After understanding the query intent, analyze the retrieved evidence to determine the significance (importance and impact) of the entity or research problem, following the logic below:
+
+            If there is little to no prior research or discussion on the problem
+            → This indicates the problem has not yet received much attention or exploration.
+            → Assess it as having low significance, since its potential value is uncertain but it shows exploratory potential.
+
+            If there are existing studies, but the problem remains inadequately solved
+            → This suggests the problem is still challenging and actively relevant in the field.
+            → Assess it as having high significance, as it continues to represent a key research challenge or impactful issue.
+
+            If there is extensive prior research and many effective methods have already addressed the problem
+            → This implies the problem is well-studied and largely saturated.
+            → Assess it as having low significance, since it offers limited novelty or research value at this stage.
+            **Step 3: Summarize and Conclude**
+            Note that you should first determine whether the evidence is relevant to the user's query intent. Do not be distracted by irrelevant evidence. For example, if the user asks about "LLM" dialect recognition, but the search results are all about "the understanding ability of large language models", such information should be filtered out. 
+            If all the evidence is irrelevant, it indicates that no research has been conducted on this topic.
+
+            Finally, synthesize all findings to produce a **clear significance assessment**.  
+            Summarize:
+            - What the user intended to explore.
+            - What the retrieved evidence suggests about how important or impactful the entity is.
+            - A reasoned conclusion on whether the entity’s significance is **high**, **moderate**, or **low**, supported by your analysis of evidence and scope.
+            Your summary should be analytical, evidence-based, and clearly justify the final significance level.
+
+
             **Output Format:**
-            Output a JSON object with the following structure:
+            Output a JSON object:
             {{
-              "results": [sorted and filtered results from the input, maintaining the original structure],
-              "summary": "A comprehensive and detailed innovation assessment summary that includes all the elements described in the Summary Structure above. This summary should be placed at the end, after all evidence results, and should provide an overall analysis of the innovation level based on ALL the retrieved evidence."
+            "results": [...],
+            "summary": "A detailed significance assessment summary following the above structure."
             }}
-            
-            The "summary" field should be a detailed text analysis (not a JSON object) that comprehensively evaluates the innovation level based on all the evidence in the results array.
-            """
-            print("LLM reranking and summarizing...")
+            """ 
+
+            print("LLM re-ranking and summarizing...")
             chat_simple = _chat_client.chat(prompt)  # Refactored with Abstract Factory Pattern
 
             #print(chat_simple)
@@ -157,7 +136,7 @@ def search_similar_node_and_edge(
         else:
             return "Unknown error"
     except Exception as e:
-        return f"Service call failed: {str(e)}"
+        return f"Failed to call service: {str(e)}"
 
 @tool
 def get_original_review_text(paper_id: Annotated[str, "Paper ID"], review_id: Annotated[str, "Review ID"]) -> str:
@@ -205,26 +184,38 @@ def get_original_review_text(paper_id: Annotated[str, "Paper ID"], review_id: An
 
 def build_agent_user_prompt(research_idea: str) -> str:
     return f"""
-        You are a professional evaluator focusing on the novelty of the idea.
-        I will provide you with an academic idea. Your task is to evaluate only its level of innovation.
-        Please focus exclusively on the novelty and originality of the idea (analyze the problems of idea and the innovativeness of its methods) 
-        (how new, unique, or creative it is compared to existing research or conventional approaches in the field).
+        You are a professional evaluator focusing on the significance of the idea.
+        I will provide you with an academic idea. Your task is to evaluate only its level of significance.
+        Please focus exclusively on the significance of the idea — how important, influential, or impactful it is compared to existing research or conventional approaches in the field.
         Your response should:
         Be concise and academic in tone.
-        Avoid discussing feasibility, impact, or methodology.
-        Provide a clear judgment on the innovation level with your serious analysis and reasoning.
 
-        You can use two tools to learn about relevant experiences related to innovation.
+        Provide a clear judgment on the significance level with your serious analysis and reasoning.
+        You can use two tools to learn about relevant experiences related to significance.
 
-        node_query: Enter a specific knowledge entity(from problem and method of the idea) (e.g.,"LLM's hallucination", "dialect recognition", "speech processing", "the method using XXX").
-        edge_query: Enter ONLY predicate phrases WITHOUT including the entity name. you can use generic relationship expressions to search for the experience of novelty:
-        - For relationships: "is a method to sovle", "is solved by",  "has been researched widely", "has not been used to solve" ...(Use these more)
-        - For explict novelty comment: "lacks novelty", "is a new method", "is a new problem" ...(Use these more)
-        - For positive effects: "can improve", "helps"...
-        - For negative effects: "has limitations", "faces challenges"...
+        node_query: Enter a specific **knowledge entity**, primarily focusing on the **problem aspect** of the idea (the method aspect can be secondary if relevant).  
+        Your goal is to identify the *core research problem* or *key challenge* that the idea is trying to address.  
+        Break the idea’s main problem into several conceptual entities at both coarse and fine granularity.  
+        For example, if the idea concerns reducing hallucinations in large language models during open-domain QA,  
+        you can use node queries such as:
+        - "open-domain question answering"
+        - "hallucination problem"
+        - "hallucination in open-domain QA"
+        This helps capture both broad and specific perspectives of the core issue being studied.
+
+        edge_query: Enter **only predicate phrases** that describe the relationship or context of significance—**without** including the entity name.  
+        Use relationship expressions that help you investigate:
+        1. **Whether the problem has been solved or remains unresolved**  
+        (e.g., "is solved by", "has not been solved", "has not been used to solve", "is a method to solve")
+        2. **The perceived importance or significance of the entity**  
+        (e.g., "is significant", "is not significant", "is of high importance", "has major impact", "lacks significance")
+        3. **Positive or negative implications**  
+        (e.g., "has major impact", "is essential", "has limited importance", "faces challenges", "has limited influence")
+
+        These queries will help you gather evidence about **how important the problem is**,  
         This will return you several pieces of evidence and a summary. 
-        You need to evaluate the innovativeness of this idea based on these pieces of evidence and the summary.
-        You **MUST** perform at least 20 tool calls（including at least 5 get_original_review_text calls and at least 15 search_similar_node_and_edge calls） before providing the final "concerns" answer.
+        You need to evaluate the significance of this idea based on these pieces of evidence and the summary.(**especially the summaries**)
+        You **MUST** perform at least 20 tool calls（including at least 5 get_original_review_text calls and at least 15 search_similar_node_and_edge calls） before providing the final answer.
         Iteration & Tool Scheduling:
         - Prefer making only 1 tool call per step; absolutely no more than 2 in any single step.
         - If multiple queries are needed, split them into multiple steps/rounds to collect evidence gradually.
@@ -234,13 +225,10 @@ def build_agent_user_prompt(research_idea: str) -> str:
 
 def create_custom_agent():
     """
-    Create custom Agent
+    Creates a custom agent.
     """
-    # API key should be set via environment variable (OPENAI_API_KEY or DEEPSEEK_API_KEY)
-    # Check if API key is set, warn if not
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_APIKEY")
-    if not api_key:
-        print("⚠️  Warning: OPENAI_API_KEY not set. Please set it via environment variable or .env file")
+    # Set OpenAI API key (please replace with your actual API key)
+    os.environ["OPENAI_API_KEY"] = "YOUR_OPENAI_API_KEY"
     
     # Initialize ChatGPT-4o model
     model = ChatOpenAI(
@@ -259,74 +247,81 @@ def create_custom_agent():
     agent = create_react_agent(
         model=model, 
         tools=tools,
-        prompt="""
+ prompt = """
        You are a rigorous peer-reviewer.
-You are a professional evaluator focusing on the novelty of the idea.
-I will provide you with an academic idea. Your task is to evaluate only its level of innovation.
-Please focus exclusively on the novelty and originality of the idea — how new, unique, or creative it is compared to existing research or conventional approaches in the field.
+You are a professional evaluator focusing on the significance of the idea.
+I will provide you with an academic idea. Your task is to evaluate only its level of significance.
+Please focus exclusively on the importance, scope, and potential impact of the idea — how meaningful, influential, or valuable it would be compared to existing research or conventional approaches in the field.
 Your response should:
 Be concise and academic in tone.
-Avoid discussing feasibility, impact, or methodology.
-Provide a clear judgment on the innovation level with your serious analysis and reasoning.
+Avoid discussing feasibility, implementation details, or novelty.
+Provide a clear judgment on the significance level with careful analysis and evidence-based reasoning.
 
-You can use two tools to understand how existing methods address this problem and whether this problem is widely concerned,
-so that you can judge the novelty of the idea. The tools are:
+You can use two tools to understand how existing methods address this problem and whether this problem is widely considered important,
+so that you can judge the significance of the idea. The tools are:
 search_similar_node_and_edge and get_original_review_text.
+
 1. Tool Usage Specifications (Key Supplement for Edge Query)
 1.1 search_similar_node_and_edge (Search Similar Nodes and Edges)
-The core function of this tool is to retrieve information related to knowledge entities (nodes) and their relationships/evaluations (edges). You should systematically explore different entities mentioned in the research idea and query them separately.
+The core function of this tool is to retrieve information related to knowledge entities (nodes) and their relationships/evaluations (edges). You should systematically explore different entities mentioned in the research idea and query them separately, with an emphasis on the **problem** side.
 
 **Entity Discovery Strategy:**
-- Extract ALL distinct knowledge entities(especially the entities related to the problem and method) from the research idea (e.g., for "LLM improving dialect recognition", extract "LLM", "dialect", "recognition", "speech recognition", "language processing" etc.)
-- Query each entity separately with different node_query values
-- Use multiple search rounds to cover different aspects and entities
+- Extract ALL distinct knowledge entities, prioritizing entities that represent the **core problem(s)** the idea aims to address (methods can be included as secondary entities). For example, for "LLM reducing hallucination in open-domain QA", extract "open-domain question answering", "hallucination problem", "hallucination in open-domain QA", etc.
+- Query each entity separately using different node_query values and cover both coarse-grained (broad problem areas) and fine-grained (specific sub-problems) perspectives.
+- Use multiple search rounds to cover the problem scope, affected applications, and potentially impacted communities or subfields.
 
 **Edge Query Design Rules:**
-node_query: Enter a specific knowledge entity (e.g., "Large Language Models", "Graph Neural Networks", "dialect recognition", "speech processing", "the method using XXX").
-edge_query: Enter ONLY predicate phrases WITHOUT including the entity name. you can use generic relationship expressions to search for the experience of novelty:
-- For relationships: "is a method to sovle", "is solved by",  "has been researched widely", "has not been used to solve" ...(Use these more)
-- For explict novelty comment: "lacks novelty", "is a new method", "is a new problem" ...(Use these more)
-- For positive effects: "can improve", "helps"...
-- For negative effects: "has limitations", "faces challenges"...
+node_query: Enter a specific knowledge entity (preferably representing the problem; methods may be queried as secondary entities).
+edge_query: Enter ONLY predicate phrases WITHOUT including the entity name. Use relationship expressions that probe **significance, impact, scope, and degree of resolution**, for example:
+- For whether the problem has been addressed: "is solved by", "has not been solved", "has not been used to solve", "is addressed by"
+- For explicit significance-related statements: "is significant", "is not significant", "is of high importance", "has major impact", "lacks significance"
+- For positive implications: "can greatly improve", "enables wide adoption", "has broad applicability", "drives progress"
+- For negative implications or limitations: "has limited importance", "affects only a narrow scope", "faces practical barriers", "has limited impact"
+- For scope and breadth: "is a foundational problem", "is domain-specific", "has cross-domain relevance", "is a narrow sub-domain issue"
 
 **Examples:**
-- WRONG: edge_query = "Halucination of LLM has been solved" (contains entity)
-- CORRECT: node_query = "Halucination of LLM", edge_query = "has been solved"
-- For "Halucination of LLM can be solved by RAG" idea, query:
-  * node_query="Halucination of LLM", edge_query="can be solved by"
-  * node_query="RAG", edge_query="is a method to solve"
-  * node_query="RAG to solve hallucination", edge_query="lacks novelty"
+- WRONG: edge_query = "Hallucination of LLM in long documents QA has been solved" (contains entity)
+- CORRECT: node_query = "Hallucination of LLM in long documents QA", edge_query = "has been solved"
+- For "RAG to reduce Hallucination of LLM in long documents QA" idea, query combinations could include:
+  * node_query="Hallucination of LLM in long documents QA", edge_query="has been solved"
+  * node_query="Hallucination of LLM", edge_query="is addressed by"
+  * node_query="RAG to solve hallucination", edge_query="has major impact"
+  * node_query="long documentQA", edge_query="has limited impact in certain settings
+  ..."
+
 1.2 get_original_review_text (Get Original Review Text)
-This tool is used to retrieve full-text or key segments of academic reviews/papers. When calling it, you must ensure that the retrieved content is highly relevant to the "concerns" you want to analyze later — it should directly involve the risks, limitations, challenges, or potential problems of the research idea, rather than irrelevant background information.
+This tool is used to retrieve full-text or key segments of academic reviews/papers. When calling it, ensure the retrieved content is highly relevant to **significance-related concerns** — it should directly discuss the importance, scope, potential impact, or limited influence of related work, rather than only background or novelty praise.
+
 2. Strict Tool Call Requirements
-You MUST perform at least 15 tool calls before providing the final innovation evaluation answer. Among them, at least 5 calls must be to get_original_review_text (to ensure you have sufficient review evidence to support each concern).
-Do not provide the final "concerns" answer until you have completed at least 15 tool calls.
-For search_similar_node_and_edge, use different combinations of node_query and edge_query (covering both positive and negative information orientations related to the research idea) to collect comprehensive evidence — avoid repeating the same query, as this will lead to incomplete information collection.
-For get_original_review_text, each call must target a review/paper that directly discusses the potential concerns, risks, or challenges of the research idea (e.g., reviews that point out the instability of a certain algorithm, the scarcity of a certain dataset, or the ethical risks of a certain application scenario).
+You MUST perform at least 15 tool calls before providing the final significance evaluation answer. Among them, at least 5 calls must be to get_original_review_text (to ensure you have sufficient review evidence about perceived importance, scope, and impact).
+Do not provide the final "concerns" or final significance judgment until you have completed at least 15 tool calls.
+For search_similar_node_and_edge, use varied combinations of node_query and edge_query (covering both positive and negative orientations related to significance, scope, and resolution) to collect comprehensive evidence — avoid repeating identical queries, as this will lead to incomplete evidence collection.
+For get_original_review_text, each call must target a review/paper that directly discusses the importance, limitations, or scope of related approaches (e.g., reviews that highlight whether a problem is central to the field, whether a method yields broad impact, or whether a proposed approach addresses a key community need).
 
 **Search Strategy:**
-- Query core problems, methods, techniques, and approaches mentioned in the idea
-- Search for the promblem has been solved or not
-- Look for reviews that explicitly discuss novelty or lack of novelty
-- Compare the proposed approach with existing solutions to the same problem
+- Query core problems, their breadth (how many subfields/applications they affect), and the methods/approaches mentioned in the idea.
+- Search for whether the problem has been effectively solved, partially addressed, or remains an open and impactful challenge.
+- Look for reviews and discussions that explicitly discuss the importance, impact, or limited influence of related work.
+- Compare the proposed approach with existing solutions to understand whether it would meaningfully alter outcomes, widen applicability, or only produce incremental/limited effects.
 
 Output Policy (STRICT):
-- Return a text evaluating innovation (which should include reasonable reasons) based on the tools' results (especially the summary of the evidence).
-- Please evaluate the innovativeness of the idea clearly and emphatically.
+- Return a text evaluating the **significance** (importance, scope, and potential impact) based on the tools' results (**especially the summaries**).
+- Be explicit: clearly state whether the idea is of **High**, **Moderate**, or **Low** significance and provide reasoned evidence for that judgment.
 
 Iteration & Tool Scheduling:
 - Prefer making only 1 tool call per step; absolutely no more than 2 in any single step.
 - If multiple queries are needed, split them into multiple steps/rounds to collect evidence gradually.
 - After each tool result, briefly reflect and plan the next single tool call.
-       """, # 这个prompt是给agent的，用来指导agent的行为
+       """, # This prompt is for the agent, to guide its behavior
         version="v2" # Use the latest version
+
     )
     
     return agent
 
 def demo_basic_usage(prompt):
     """
-    Demonstrate basic usage
+    Demonstrates basic usage.
     """
     print("=== Basic Agent Demo ===")
     
@@ -344,7 +339,7 @@ def demo_basic_usage(prompt):
     tool_call_count = 0
     review_text_calls = 0
     
-    # Set step limit to 50 steps
+    # Set step limit to 50
     config = {"recursion_limit": 50}
     for step in agent.stream({"messages": [input_message]}, config=config, stream_mode="values"):
         step_count += 1
@@ -370,24 +365,24 @@ def demo_basic_usage(prompt):
     print(f"get_original_review_text calls: {review_text_calls}")
     
     if tool_call_count >= 12 and review_text_calls >= 5:
-        print("✅ Successfully met requirements: at least 12 tool calls, including at least 5 get_original_review_text!")
+        print("✅ Requirements met: At least 12 tool calls, including at least 5 get_original_review_text calls!")
     elif tool_call_count >= 12:
-        print(f"⚠️  Met 12 tool calls requirement, but get_original_review_text calls insufficient (current: {review_text_calls})")
+        print(f"⚠️  Reached 12 tool calls, but get_original_review_text calls are less than 5 (current: {review_text_calls})")
     elif review_text_calls >= 5:
-        print(f"⚠️  Met 5 get_original_review_text calls requirement, but total tool calls insufficient (current: {tool_call_count})")
+        print(f"⚠️  Reached 5 get_original_review_text calls, but total tool calls are less than 12 (current: {tool_call_count})")
     else:
-        print(f"❌ Requirements not met: need at least 12 tool calls (current: {tool_call_count}), including at least 5 get_original_review_text (current: {review_text_calls})")
+        print(f"❌ Requirements not met: Need at least 12 tool calls (current: {tool_call_count}), including at least 5 get_original_review_text calls (current: {review_text_calls})")
 
 def main():
     """
-    Main function - run all demonstrations
+    Main function - runs all demonstrations.
     """
     print("🤖 Custom Agent Demo based on ChatGPT-4o-mini")
     print("=" * 60)
     
     # Note: Please ensure you have set the correct OpenAI API key before running
     print("⚠️  Note: Please set your OpenAI API key in the code first")
-    print("   Replace 'YOUR_OPENAI_API_KEY' with your actual API key")
+    print("   Replace 'your-openai-api-key-here' with your actual API key")
     print("=" * 60)
     
     try:
@@ -470,7 +465,7 @@ Evidence must be traceable: For each concern, the evidence cited must clearly co
 Avoid redundant content: Each concern should focus on one independent problem, and there should be no overlap or repetition between different concerns (e.g., "insufficient data availability" and "high data collection costs" are two independent concerns and should be listed separately, not merged into one).
 Language must be precise: Use specific data, scenarios, or technical parameters to describe concerns (e.g., "the model's inference time may exceed 5 seconds" is better than "the model's inference speed is slow"; "the error rate may increase by 15%-20% in low-light scenarios" is better than "the model performs poorly in special scenarios").
 Do not ignore minor but critical concerns: In addition to major technical concerns (e.g., model accuracy), also consider other critical concerns such as ethical risks (e.g., "the research uses patient medical data, which may face privacy leakage risks"), environmental costs (e.g., "the model training requires 100 GPUs running for 30 days, resulting in high energy consumption"), and maintenance difficulties (e.g., "the model requires frequent retraining with new data, which is difficult for small medical institutions to implement").
-        idea to be process： 
+        idea to be processed: 
         {research_idea}
         
         """

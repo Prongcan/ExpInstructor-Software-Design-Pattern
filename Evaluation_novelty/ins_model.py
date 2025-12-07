@@ -236,8 +236,11 @@ def create_custom_agent():
     """
     Create custom Agent
     """
-    # Set OpenAI API key (please replace with your actual API key)
-    os.environ["OPENAI_API_KEY"] = "YOUR_OPENAI_API_KEY"
+    # API key should be set via environment variable (OPENAI_API_KEY or DEEPSEEK_API_KEY)
+    # Check if API key is set, warn if not
+    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_APIKEY")
+    if not api_key:
+        print("⚠️  Warning: OPENAI_API_KEY not set. Please set it via environment variable or .env file")
     
     # Initialize ChatGPT-4o model
     model = ChatOpenAI(

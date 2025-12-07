@@ -237,7 +237,21 @@ class EvaluationFacade:
                 if isinstance(evaluation_result, tuple):
                     concerns, raw_response = evaluation_result
                     evaluation_text = raw_response
-                    coverage_analysis = self._analyze_coverage(concerns)
+                    # Extract original concerns from additional_info if available
+                    original_concerns = None
+                    if evaluation_input.idea.additional_info:
+                        original_concerns = evaluation_input.idea.additional_info.get(
+                            "concerns"
+                        ) or evaluation_input.idea.additional_info.get(
+                            "original_concerns"
+                        )
+                    # Use coverage comparison strategy if original concerns are available
+                    coverage_analysis = self._analyze_coverage(
+                        concerns,
+                        original_concerns=original_concerns,
+                        strategy=evaluation_input.model_config.get("coverage_strategy", "llm")
+                        if evaluation_input.model_config else "llm"
+                    )
                 else:
                     evaluation_text = evaluation_result
                     coverage_analysis = None
@@ -317,7 +331,7 @@ class EvaluationFacade:
             
             # Lazy import strategies
             try:
-                from Template.service.strategies import (
+                from Evaluation_utils.strategies import (
                     NoveltyScoringStrategy,
                     FeasibilityScoringStrategy,
                     SignificanceScoringStrategy
@@ -374,12 +388,22 @@ class EvaluationFacade:
         
         return None
     
-    def _analyze_coverage(self, concerns: List[str]) -> Dict[str, Any]:
+    def _analyze_coverage(
+        self,
+        concerns: List[str],
+        original_concerns: Optional[List[str]] = None,
+        strategy: Optional[str] = "llm"
+    ) -> Dict[str, Any]:
         """
-        Analyze coverage of concerns.
+        Analyze coverage of concerns using CoverageCompareStrategy (Layer 4).
+        
+        If original_concerns is provided, compares generated concerns against them.
+        Otherwise, returns a simple summary of generated concerns.
         
         Args:
-            concerns: List of concerns from feasibility evaluation
+            concerns: List of generated concerns from feasibility evaluation
+            original_concerns: Optional list of original (gold standard) concerns to compare against
+            strategy: Strategy to use ("llm" or "embedding")
             
         Returns:
             Coverage analysis result
@@ -387,13 +411,55 @@ class EvaluationFacade:
         if not concerns:
             return {"per_item": [], "summary": {"covered_count": 0, "total": 0}}
         
-        return {
-            "per_item": [{"concern": c} for c in concerns],
-            "summary": {
-                "covered_count": len(concerns),
-                "total": len(concerns)
+        # If no original concerns provided, return simple summary
+        if not original_concerns:
+            return {
+                "per_item": [{"concern": c} for c in concerns],
+                "summary": {
+                    "covered_count": len(concerns),
+                    "total": len(concerns)
+                }
             }
-        }
+        
+        # Use CoverageCompareStrategy to compare
+        try:
+            if strategy == "embedding":
+                if not self.embedding_factory:
+                    logger.warning("Embedding factory not available, falling back to LLM")
+                    strategy = "llm"
+                else:
+                    embedding_client = self.embedding_factory.create()
+                    from Evaluation_utils.strategies import EmbeddingCoverageCompareStrategy
+                    compare_strategy = EmbeddingCoverageCompareStrategy(embedding_client)
+                    coverage_result, _ = compare_strategy.compare(original_concerns, concerns)
+                    return coverage_result
+            
+            # Default to LLM strategy
+            if not self.chat_factory:
+                logger.warning("Chat factory not available for coverage comparison")
+                return {
+                    "per_item": [{"concern": c} for c in concerns],
+                    "summary": {
+                        "covered_count": len(concerns),
+                        "total": len(concerns)
+                    }
+                }
+            
+            chat_client = self.chat_factory.create()
+            from Evaluation_utils.strategies import LLMCoverageCompareStrategy
+            compare_strategy = LLMCoverageCompareStrategy(chat_client)
+            coverage_result, _ = compare_strategy.compare(original_concerns, concerns)
+            return coverage_result
+            
+        except Exception as e:
+            logger.warning(f"Coverage comparison failed: {e}, returning simple summary")
+            return {
+                "per_item": [{"concern": c} for c in concerns],
+                "summary": {
+                    "covered_count": len(concerns),
+                    "total": len(concerns)
+                }
+            }
     
     def batch_evaluate(
         self,

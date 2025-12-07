@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from langgraph.prebuilt import create_react_agent
 from Retrive_Generate.graph_retrieval_system import GraphRetrievalSystem
 from service.llm_factory import get_chat_client  # Refactored with Factory Method Pattern
+from Evaluation_feasibility.retrieval_active_object import RetrievalActiveObject
 
 # Lazy initialization of graph retrieval system
 graph_file = "result_v2/all_graphs_cleaned.json"
@@ -49,34 +50,37 @@ def search_similar_node_and_edge(
     edge_k: int = 5
 ) -> str:
     """
-    Comprehensive search for nodes and edges.
-    All four parameters are indispensable. 
-    The first two parameters respectively represent the node to be searched and the expected top node_k nodes. 
-    The last two parameters indicate that for each of the selected node_k nodes, 
-    all edges of each node are searched to find the top edge_k edges.
-    Args:
-        node_query: Knowledge entity to search for (e.g., "Large Language Models", "Graph Neural Networks")
-        node_k: Number of nodes to return, default is 5
-        edge_query: Predicate phrases expressing evaluations or relationships (e.g., "is better than", "is good at", "improves", "solves")
-        edge_k: Number of edges per node to return, default is 5
-    Returns:
-        JSON string containing node-edge-node triplet information
+    Comprehensive search for nodes and edges using Active Object Pattern.
+    ... (保留原有的 docstring) ...
     """
     try:
-        import requests
-        url = "http://127.0.0.1:9876/search_node_edge"
+        # 1. 获取 Active Object 实例 (Singleton)
+        # 这取代了直接 import requests 和硬编码 URL
+        retrieval_ao = RetrievalActiveObject()
+        
+        # 2. 构造请求 Payload
         payload = {
             "node_query": node_query,
             "node_k": node_k,
             "edge_query": edge_query,
             "edge_k": edge_k
         }
-        response = requests.post(url, json=payload, timeout=3000)
-        response.raise_for_status()
-        data = response.json()
+        
+        # 3. [Active Object 核心] 提交任务并获得 Future
+        # 这里不会阻塞，请求只是被放入了队列
+        print(f"[Tool] Submitting retrieval task for '{node_query}' via Active Object...")
+        future_result = retrieval_ao.submit_task(payload)
+        
+        # 4. 获取结果
+        # 注意：虽然 LangChain Tool 最终需要同步返回字符串，但我们已经解耦了调用和执行。
+        # 在更复杂的异步 Agent 架构中，这里可以 await future。
+        # 这里为了配合 requests 库和当前架构，我们使用 .result() 等待。
+        data = future_result.result(timeout=65) # 设置稍微宽裕的超时
+        
+        # --- 以下逻辑保持不变 (LLM Re-ranking) ---
         if "result" in data:
             results = data["result"]
-            # 8. Call LLM for final reranking and summarization
+            # Call LLM for final re-ranking and summarization
             prompt = f"""
             You are an innovation evaluator. Your task is to assess the novelty/innovation level of an entity based on retrieved evidence.
             The user's query intent: find evidence about entity [{node_query}] and relation [{edge_query}] to evaluate its innovation level.
@@ -144,20 +148,20 @@ def search_similar_node_and_edge(
             }}
             
             The "summary" field should be a detailed text analysis (not a JSON object) that comprehensively evaluates the innovation level based on all the evidence in the results array.
-            """
-            print("LLM reranking and summarizing...")
-            chat_simple = _chat_client.chat(prompt)  # Refactored with Abstract Factory Pattern
-
-            #print(chat_simple)
-            # chat_simple = self.parse_llm_json_output(chat_simple)
             
+            """
+            print("LLM re-ranking and summarization in progress...")
+            chat_simple = _chat_client.chat(prompt)  
+
             return chat_simple
         elif "error" in data:
             return f"Service error: {data['error']}"
         else:
             return "Unknown error"
+            
     except Exception as e:
-        return f"Service call failed: {str(e)}"
+        return f"Failed to call service via Active Object: {str(e)}"
+    
 
 @tool
 def get_original_review_text(paper_id: Annotated[str, "Paper ID"], review_id: Annotated[str, "Review ID"]) -> str:

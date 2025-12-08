@@ -120,3 +120,95 @@ class BatchEvaluationResult:
         """Calculate success rate as percentage."""
         total = len(self.results)
         return (self.total_success / total * 100) if total > 0 else 0.0
+
+
+@dataclass
+class GraphNode:
+    """Represents a node in the knowledge graph."""
+    id: str
+    name: str
+    type: str = "concept"
+    description: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GraphEdge:
+    """Represents an edge in the knowledge graph."""
+    source: str
+    target: str
+    relation: str
+    description: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GraphData:
+    """Container for graph nodes and edges."""
+    nodes: List[GraphNode]
+    edges: List[GraphEdge]
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary format."""
+        return {
+            "nodes": [
+                {"id": n.id, "name": n.name, "type": n.type, "description": n.description, **n.metadata}
+                for n in self.nodes
+            ],
+            "edges": [
+                {"source": e.source, "target": e.target, "relation": e.relation, "description": e.description, **e.metadata}
+                for e in self.edges
+            ]
+        }
+
+
+@dataclass
+class GraphConstructionInput:
+    """Input for constructing a graph from a review."""
+    paper_id: str
+    review_id: str
+    review_content: Dict[str, str]  # keys: strengths, weakness, suggestions
+    model_config: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class GraphConstructionResult:
+    """Result of graph construction."""
+    input_data: GraphConstructionInput
+    success: bool
+    graph_data: Optional[GraphData] = None
+    raw_response: Optional[str] = None
+    error_message: Optional[str] = None
+
+
+class RetrievalType(Enum):
+    """Types of retrieval operations."""
+    KEYWORD = "keyword"
+    VECTOR = "vector"
+    SMART = "smart"
+    NEIGHBOR = "neighbor"  # For get_entity_relationships
+    PATH = "path"          # For find_paths
+
+
+@dataclass
+class RetrievalInput:
+    """Input for retrieval operations."""
+    query: str = ""
+    retrieval_type: RetrievalType = RetrievalType.SMART
+    top_k: int = 10
+    entity_name: Optional[str] = None  # For neighbor/path search
+    target_entity: Optional[str] = None # For path search
+    max_hops: int = 3 # For path search
+
+
+@dataclass
+class RetrievalResult:
+    """Result of retrieval operations."""
+    query: str
+    success: bool
+    entities: List[Dict[str, Any]] = field(default_factory=list)
+    relationships: List[Dict[str, Any]] = field(default_factory=list)
+    paths: List[List[str]] = field(default_factory=list)
+    error_message: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+

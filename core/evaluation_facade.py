@@ -50,7 +50,7 @@ class EvaluationFacade:
         """Initialize facade with factory clients."""
         # Create factory instances for LLM clients
         try:
-            from service.llm_factory import ChatFactory, EmbeddingFactory, DEFAULT_CHAT_PRIORITY, DEFAULT_EMBEDDING_PRIORITY
+            from LLM_service.llm_factory import ChatFactory, EmbeddingFactory, DEFAULT_CHAT_PRIORITY, DEFAULT_EMBEDDING_PRIORITY
             self.chat_factory = ChatFactory(DEFAULT_CHAT_PRIORITY)
             self.embedding_factory = EmbeddingFactory(DEFAULT_EMBEDDING_PRIORITY)
         except Exception as e:
@@ -81,9 +81,9 @@ class EvaluationFacade:
         # Lazy load template classes
         if EvaluationFacade.TEMPLATE_CLASSES is None:
             try:
-                from Template.Evaluation_utils.ins_evaluation_template import InstructorEvaluationTemplate
-                from Template.Evaluation_utils.gpt_evaluation_template import GPTEvaluationTemplate
-                from Template.Evaluation_utils.rag_evaluation_template import RAGEvaluationTemplate
+                from Template.abstract.ins_evaluation_template import InstructorEvaluationTemplate
+                from Template.abstract.gpt_evaluation_template import GPTEvaluationTemplate
+                from Template.abstract.rag_evaluation_template import RAGEvaluationTemplate
                 
                 EvaluationFacade.TEMPLATE_CLASSES = {
                     EvaluationMethod.INSTRUCTOR: InstructorEvaluationTemplate,
@@ -331,7 +331,7 @@ class EvaluationFacade:
             
             # Lazy import strategies
             try:
-                from Evaluation_utils.strategies import (
+                from Strategies.evaluation_strategies import (
                     NoveltyScoringStrategy,
                     FeasibilityScoringStrategy,
                     SignificanceScoringStrategy
@@ -429,7 +429,7 @@ class EvaluationFacade:
                     strategy = "llm"
                 else:
                     embedding_client = self.embedding_factory.create()
-                    from Evaluation_utils.strategies import EmbeddingCoverageCompareStrategy
+                    from Strategies.evaluation_strategies import EmbeddingCoverageCompareStrategy
                     compare_strategy = EmbeddingCoverageCompareStrategy(embedding_client)
                     coverage_result, _ = compare_strategy.compare(original_concerns, concerns)
                     return coverage_result
@@ -446,7 +446,7 @@ class EvaluationFacade:
                 }
             
             chat_client = self.chat_factory.create()
-            from Evaluation_utils.strategies import LLMCoverageCompareStrategy
+            from Strategies.evaluation_strategies import LLMCoverageCompareStrategy
             compare_strategy = LLMCoverageCompareStrategy(chat_client)
             coverage_result, _ = compare_strategy.compare(original_concerns, concerns)
             return coverage_result

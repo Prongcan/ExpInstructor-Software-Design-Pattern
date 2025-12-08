@@ -4,17 +4,12 @@ import json
 import networkx as nx
 import re
 from typing import Any, Dict, List, Optional, Tuple
-from collections import defaultdict
-import math
 import os
-import hashlib
-from pathlib import Path
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from sentence_transformers import SentenceTransformer
-    import numpy as np
     from tqdm import tqdm
 except Exception:
     SentenceTransformer = None
@@ -27,37 +22,14 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from service.llm_factory import get_embedding_client
-from service.llm_adapters import BGEAdapter
-from service.interfaces import IEmbeddingClient
-from service.strategies import RetrievalRankingStrategy, CosineSimilarityRankingStrategy
+from Strategies.retrieval_scoring import RetrievalRankingStrategy, CosineSimilarityRankingStrategy
+from Retrive_Generate.utils.graph_loader import GraphLoader
+from Retrive_Generate.utils.embedding_manager import EmbeddingManager
+from Retrive_Generate.utils.graph_indexer import GraphIndexer, GraphIndex
+from Retrive_Generate.utils.graph_presenter import GraphPresenter
 
-_EMBED_CLIENT: Optional[IEmbeddingClient] = None
 BGE_M3_AVAILABLE = False
 
-
-def _get_embed_client() -> IEmbeddingClient:
-    """Create or return the shared embedding client from the registry-backed factory."""
-    global _EMBED_CLIENT, BGE_M3_AVAILABLE
-    if _EMBED_CLIENT is None:
-        _EMBED_CLIENT = get_embedding_client()  # Refactored with Factory Method Pattern
-        BGE_M3_AVAILABLE = isinstance(_EMBED_CLIENT, BGEAdapter)
-    return _EMBED_CLIENT
-
-
-def embed_texts(texts: list[str], model: str = "BAAI/bge-m3") -> list[list[float]]:
-    """
-    Unified embedding interface using Factory Method + Adapter.
-    
-    Args:
-        texts: List of texts
-        model: Model name
-        
-    Returns:
-        List of vectors
-    """
-    client = _get_embed_client()
-    return client.embed_texts(texts, model=model)
 
 class GraphRetrievalSystem:
     def __init__(self, graph_file, gpu_device="auto", batch_size=256, build_index_immediately=True, ranking_strategy: Optional[RetrievalRankingStrategy] = None):
@@ -85,6 +57,12 @@ class GraphRetrievalSystem:
         self.batch_size = batch_size
         # Refactored with Strategy Pattern: use ranking strategy
         self.ranking_strategy = ranking_strategy or CosineSimilarityRankingStrategy()
+        
+        # Initialize managers
+        self.embedding_manager = EmbeddingManager(batch_size=batch_size)
+        self.indexer = GraphIndexer(self.embedding_manager)
+        self.index = GraphIndex() # Empty index initially
+
         self.load_graph(graph_file)
         if build_index_immediately:
             self.build_index()
@@ -95,280 +73,138 @@ class GraphRetrievalSystem:
         1) { "nodes": [...], "edges": [...] }
         2) [ { "paper_id": "...", "review_id": "...", "edges": [ {...}, ... ] }, ... ]
         """
-        with open(graph_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-
-        self.G.clear()
-
-        def add_edge_record(src_name, tgt_name, rel, evd, edge_meta=None):
-            # Ensure nodes exist
-            if not self.G.has_node(src_name):
-                self.G.add_node(src_name, type='entity')
-            if not self.G.has_node(tgt_name):
-                self.G.add_node(tgt_name, type='entity')
-            # Add the edge
-            attrs = {
-                "relationship": rel or "",
-                "evidence": evd or "",
-            }
-            if edge_meta:
-                attrs.update(edge_meta)
-            self.G.add_edge(src_name, tgt_name, **attrs)
-
-        # Case 1: legacy format
-        if isinstance(data, dict) and "nodes" in data and "edges" in data:
-            for node in data["nodes"]:
-                self.G.add_node(node.get("name", node.get("id", "")),
-                                id=node.get("id", ""),
-                                type=node.get("type", "entity"))
-            for edge in data["edges"]:
-                add_edge_record(
-                    edge.get("source"), edge.get("target"),
-                    edge.get("relationship"), edge.get("evidence"),
-                    {"edge_id": edge.get("id", "")}
-                )
-
-        # Case 2: all_graphs.json format (list where each entry has edges)
-        elif isinstance(data, list):
-            for item_idx, item in enumerate(data):
-                paper_id = item.get("paper_id", "")
-                review_id = item.get("review_id", "")
-                edges_raw = item.get("edges", [])
-                # Support edges defined as a list or a single dict
-                if isinstance(edges_raw, dict):
-                    edges_iter = [edges_raw]
-                elif isinstance(edges_raw, list):
-                    edges_iter = edges_raw
-                else:
-                    edges_iter = []
-                for edge_idx, e in enumerate(edges_iter):
-                    add_edge_record(
-                        e.get("source_name"), e.get("target_name"),
-                        e.get("relationship"), e.get("evidence"),
-                        {
-                            "edge_id": f"{paper_id}:{review_id}:{edge_idx}",
-                            "paper_id": paper_id,
-                            "review_id": review_id
-                        }
-                    )
-        else:
-            raise ValueError("Unsupported graph data format")
-
-        print(f"Graph loaded: {self.G.number_of_nodes()} nodes, {self.G.number_of_edges()} edges")
+        self.G = GraphLoader.load_graph(graph_file)
 
     def build_index(self):
         """
-        Build the search index
+        Build the search index using GraphIndexer
         """
-        self.entity_index = {}
-        self.relationship_index = defaultdict(list)
-        self.evidence_index = defaultdict(list)
-        self._entity_texts = []
-        self._edge_texts = []
-        self._entity_names = []
-        self._edge_triplets = []
-        self._entity_embeddings = None
-        self._edge_embeddings = None
-        self._embed_model = None
+        self.index = self.indexer.build_index(self.G)
+
+    # Properties to maintain backward compatibility and ease of access
+    @property
+    def entity_index(self): return self.index.entity_index
+    @property
+    def relationship_index(self): return self.index.relationship_index
+    @property
+    def evidence_index(self): return self.index.evidence_index
+    @property
+    def _entity_names(self): return self.index.entity_names
+    @property
+    def _edge_triplets(self): return self.index.edge_triplets
+    @property
+    def _entity_embeddings(self): return self.index.entity_embeddings
+    @property
+    def _edge_embeddings(self): return self.index.edge_embeddings
+
+    
+    def keyword_search_entities(self, query: str) -> List[str]:
+        """
+        Keyword-based entity search (Exact/Substring match)
+        """
+        query = query.lower()
+        results = []
         
-        # Build entity index
-        for node in self.G.nodes():
-            self.entity_index[node.lower()] = node
-            self._entity_names.append(node)
-            # Entity description text
-            self._entity_texts.append(f"ENTITY: {node}")
+        for entity in self.entity_index:
+            if query in entity:
+                results.append(self.entity_index[entity])
         
-        # Build relationship index
-        for source, target, attrs in self.G.edges(data=True):
-            rel = attrs.get('relationship', '')
-            evidence = attrs.get('evidence', '')
+        return results
+    
+    def keyword_search_relationships(self, query: str) -> List[Tuple]:
+        """
+        Keyword-based relationship search
+        """
+        query = query.lower()
+        results = []
+        
+        for rel_type, edges in self.relationship_index.items():
+            if query in rel_type:
+                results.extend(edges)
+        
+        return results
+    
+    def keyword_search_evidence(self, query: str) -> List[Tuple]:
+        """
+        Keyword-based evidence search
+        """
+        query = query.lower()
+        results = []
+        
+        for evidence, edges in self.evidence_index.items():
+            if query in evidence:
+                results.extend(edges)
+        
+        return results
+    
+    def keyword_search(self, query: str) -> Dict[str, Any]:
+        """
+        Keyword search across entities, relationships, and evidence.
+        (Formerly named semantic_search, renamed to reflect actual behavior)
+        """
+        query = query.lower()
+        results = {
+            "query": query,
+            "entities": [],
+            "relationships": [],
+            "evidence": [],
+            "suggestions": []
+        }
+        
+        # Search entities
+        entity_matches = self.keyword_search_entities(query)
+        results["entities"] = entity_matches
+        
+        # Search relationships
+        rel_matches = self.keyword_search_relationships(query)
+        results["relationships"] = rel_matches
+        
+        # Search evidence
+        evidence_matches = self.keyword_search_evidence(query)
+        results["evidence"] = evidence_matches
+        
+        # Generate suggestions
+        if entity_matches:
+            for entity in entity_matches[:3]:  # Only take the first three entities
+                rel_info = self.get_entity_relationships(entity)
+                results["suggestions"].append({
+                    "entity": entity,
+                    "connections": rel_info["total_connections"]
+                })
+        
+        return results
+
+    def get_entity_relationships(self, entity: str) -> Dict[str, List]:
+        """
+        Get all relationships for a specific entity
+        """
+        if entity not in self.G:
+            return {"error": f"Entity '{entity}' does not exist"}
+        
+        incoming = []
+        outgoing = []
+        
+        # Optimized: Use NetworkX direct neighbor access instead of iterating all edges
+        for _, target, attrs in self.G.out_edges(entity, data=True):
+            outgoing.append({
+                "target": target,
+                "relationship": attrs.get('relationship', ''),
+                "evidence": attrs.get('evidence', '')
+            })
             
-            self.relationship_index[rel.lower()].append((source, target, attrs))
-            self.evidence_index[evidence.lower()].append((source, target, attrs))
-            # Edge description text (triplet plus evidence snippet)
-            triplet_text = f"EDGE: {source} --[{rel}]--> {target}. EVIDENCE: {evidence}"
-            self._edge_texts.append(triplet_text)
-            self._edge_triplets.append((source, target, attrs))
-
-        # Build vector indexes (if sentence-transformers is available)
-        self._maybe_build_embeddings()
-
-    def _maybe_build_embeddings(self, model_name: str = 'BAAI/bge-m3'):
-        """
-        Build semantic embeddings for entities and edges using the BGE-M3 or ChatGPT embedding API.
-        """
-        if not self._entity_texts and not self._edge_texts:
-            return
+        for source, _, attrs in self.G.in_edges(entity, data=True):
+            incoming.append({
+                "source": source,
+                "relationship": attrs.get('relationship', ''),
+                "evidence": attrs.get('evidence', '')
+            })
         
-        # Ensure embedding provider is initialized before sizing/batching decisions
-        _get_embed_client()
-        
-        # Try loading from cache
-        cache_dir, ent_path, edge_path, meta_path = self._cache_paths(model_name)
-        signature = self._compute_signature()
-        try:
-            if ent_path.exists() and edge_path.exists() and meta_path.exists():
-                with open(meta_path, 'r', encoding='utf-8') as f:
-                    meta = json.load(f)
-                if meta.get('model_name') == model_name and meta.get('signature') == signature:
-                    # Load cached embeddings
-                    with open(ent_path, 'r', encoding='utf-8') as f:
-                        self._entity_embeddings = json.load(f) if self._entity_texts else None
-                    with open(edge_path, 'r', encoding='utf-8') as f:
-                        self._edge_embeddings = json.load(f) if self._edge_texts else None
-                    print(f"Loaded embedding cache: {cache_dir}")
-                    return
-        except Exception:
-            # Ignore corrupted cache and rebuild
-            pass
-
-        # Recompute and save the cache
-        try:
-            if self._entity_texts:
-                print(f"Generating embeddings for {len(self._entity_texts)} entities...")
-                # Use a larger batch size for BGE-M3 to maximize GPU usage
-                batch_size = self.batch_size if BGE_M3_AVAILABLE else 100
-                self._entity_embeddings = self._batch_embed_texts(self._entity_texts, model_name, batch_size=batch_size)
-            if self._edge_texts:
-                print(f"Generating embeddings for {len(self._edge_texts)} edges...")
-                batch_size = self.batch_size if BGE_M3_AVAILABLE else 100
-                self._edge_embeddings = self._batch_embed_texts(self._edge_texts, model_name, batch_size=batch_size)
-
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            if self._entity_embeddings is not None:
-                with open(ent_path, 'w', encoding='utf-8') as f:
-                    json.dump(self._entity_embeddings, f, ensure_ascii=False)
-            if self._edge_embeddings is not None:
-                with open(edge_path, 'w', encoding='utf-8') as f:
-                    json.dump(self._edge_embeddings, f, ensure_ascii=False)
-            with open(meta_path, 'w', encoding='utf-8') as f:
-                json.dump({
-                    'model_name': model_name,
-                    'signature': signature,
-                    'entity_count': len(self._entity_texts),
-                    'edge_count': len(self._edge_texts)
-                }, f, ensure_ascii=False, indent=2)
-            print(f"Generated and cached embeddings: {cache_dir}")
-        except Exception as e:
-            print(f"Failed to generate/save embeddings: {e}")
-            self._entity_embeddings = None
-            self._edge_embeddings = None
-
-    def _compute_signature(self) -> str:
-        """
-        Compute a signature of the current graph content based on node and edge text hashes; any change invalidates the cache.
-        """
-        h = hashlib.sha1()
-        h.update(f"N:{len(self._entity_texts)} E:{len(self._edge_texts)}".encode('utf-8'))
-        # Sample to avoid huge memory usage; can hash everything if needed
-        for txt in self._entity_texts[:5000]:
-            h.update(txt.encode('utf-8', errors='ignore'))
-        for txt in self._edge_texts[:20000]:
-            h.update(txt.encode('utf-8', errors='ignore'))
-        return h.hexdigest()
-
-    def _cache_paths(self, model_name: str):
-        """
-        Return the cache directory and file paths.
-        Path: <repo>/Retrive_Generate/.embeddings/<model_hash>/{entities.json,edges.json,meta.json}
-        """
-        model_hash = hashlib.sha1(model_name.encode('utf-8')).hexdigest()[:12]
-        base_dir = Path(__file__).resolve().parent / '.embeddings' / model_hash
-        ent_path = base_dir / 'entities.json'
-        edge_path = base_dir / 'edges.json'
-        meta_path = base_dir / 'meta.json'
-        return base_dir, ent_path, edge_path, meta_path
-
-    def _batch_embed_texts(self, texts: List[str], model: str, batch_size: int = 100) -> List[List[float]]:
-        """
-        Batch embeddings to avoid API limits
-        """
-        if not texts:
-            return []
-        
-        all_embeddings = []
-        total_batches = (len(texts) + batch_size - 1) // batch_size
-        
-        # Create a progress bar
-        if tqdm:
-            pbar = tqdm(total=len(texts), desc="Generating embeddings", unit="text", 
-                       bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
-        else:
-            pbar = None
-        
-        try:
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i:i + batch_size]
-                batch_num = i // batch_size + 1
-                
-                try:
-                    # Filter empty or overly long texts
-                    filtered_batch = []
-                    for text in batch:
-                        if text and len(text.strip()) > 0 and len(text) < 8000:  # OpenAI limit
-                            filtered_batch.append(text.strip())
-                        else:
-                            # Use placeholders for empty or overly long texts
-                            filtered_batch.append("empty")
-                    
-                    if filtered_batch:
-                        batch_embeddings = embed_texts(filtered_batch, model=model)
-                        all_embeddings.extend(batch_embeddings)
-                    else:
-                        # If the entire batch is filtered, add zero vectors (BGE-M3 dimension is 1024)
-                        embedding_dim = 1024 if BGE_M3_AVAILABLE else 1536
-                        all_embeddings.extend([[0.0] * embedding_dim] * len(batch))
-                    
-                    # Update progress bar
-                    if pbar:
-                        pbar.update(len(batch))
-                        pbar.set_postfix({'batch': f"{batch_num}/{total_batches}"})
-                    else:
-                        print(f"Processing batch {batch_num}/{total_batches} ({len(batch)} texts)...")
-                    
-                    # BGE-M3 does not require delay; ChatGPT needs pauses to avoid rate limits
-                    if not BGE_M3_AVAILABLE or not model.startswith("BAAI/bge-m3"):
-                        import time
-                        time.sleep(0.1)
-                    
-                except Exception as e:
-                    print(f"Batch {batch_num} failed: {e}")
-                    # Add zero vectors as placeholders (BGE-M3 dimension is 1024)
-                    embedding_dim = 1024 if BGE_M3_AVAILABLE else 1536
-                    all_embeddings.extend([[0.0] * embedding_dim] * len(batch))
-                    if pbar:
-                        pbar.update(len(batch))
-        
-        finally:
-            if pbar:
-                pbar.close()
-        
-        return all_embeddings
-
-    def _cosine_topk(self, query_vec: List[float], matrix: List[List[float]], k: int = 10) -> List[int]:
-        """
-        Legacy method for backward compatibility.
-        Refactored with Strategy Pattern: now uses ranking_strategy internally.
-        """
-        if query_vec is None or matrix is None or len(matrix) == 0:
-            return []
-        
-        # Use strategy pattern for ranking
-        # Create dummy names for compatibility
-        dummy_names = [f"item_{i}" for i in range(len(matrix))]
-        ranked = self.ranking_strategy.rank_nodes(query_vec, matrix, dummy_names, k=k)
-        
-        # Extract indices from ranked results
-        indices = []
-        for result in ranked:
-            # Extract index from dummy name (format: "item_0", "item_1", etc.)
-            try:
-                idx = int(result["node"].split("_")[1])
-                indices.append(idx)
-            except (IndexError, ValueError):
-                continue
-        
-        return indices
+        return {
+            "entity": entity,
+            "outgoing_relationships": outgoing,
+            "incoming_relationships": incoming,
+            "total_connections": len(incoming) + len(outgoing)
+        }
 
     def semantic_vector_search(self, query: str, top_k: int = 10) -> Dict[str, Any]:
         """
@@ -377,13 +213,13 @@ class GraphRetrievalSystem:
         Returns the top-k candidates for entities and edges.
         """
         if self._entity_embeddings is None and self._edge_embeddings is None:
-            self._maybe_build_embeddings()
+            self.build_index()
         if self._entity_embeddings is None and self._edge_embeddings is None:
             return {"error": "Embedding model not ready"}
 
         # Build the query vector
         try:
-            q_vec = embed_texts([query], model='BAAI/bge-m3')[0]
+            q_vec = self.embedding_manager.embed_texts([query], model='BAAI/bge-m3')[0]
         except Exception as e:
             return {"error": f"Failed to generate query vector: {e}"}
 
@@ -414,76 +250,6 @@ class GraphRetrievalSystem:
             "query": query,
             "top_entities": entity_hits,
             "top_edges": edge_hits
-        }
-    
-    def search_entities(self, query: str) -> List[str]:
-        """
-        Search entities
-        """
-        query = query.lower()
-        results = []
-        
-        for entity in self.entity_index:
-            if query in entity:
-                results.append(self.entity_index[entity])
-        
-        return results
-    
-    def search_relationships(self, query: str) -> List[Tuple]:
-        """
-        Search relationships
-        """
-        query = query.lower()
-        results = []
-        
-        for rel_type, edges in self.relationship_index.items():
-            if query in rel_type:
-                results.extend(edges)
-        
-        return results
-    
-    def search_evidence(self, query: str) -> List[Tuple]:
-        """
-        Search evidence
-        """
-        query = query.lower()
-        results = []
-        
-        for evidence, edges in self.evidence_index.items():
-            if query in evidence:
-                results.extend(edges)
-        
-        return results
-    
-    def get_entity_relationships(self, entity: str) -> Dict[str, List]:
-        """
-        Get all relationships for a specific entity
-        """
-        if entity not in self.G:
-            return {"error": f"Entity '{entity}' does not exist"}
-        
-        incoming = []
-        outgoing = []
-        
-        for source, target, attrs in self.G.edges(data=True):
-            if source == entity:
-                outgoing.append({
-                    "target": target,
-                    "relationship": attrs.get('relationship', ''),
-                    "evidence": attrs.get('evidence', '')
-                })
-            elif target == entity:
-                incoming.append({
-                    "source": source,
-                    "relationship": attrs.get('relationship', ''),
-                    "evidence": attrs.get('evidence', '')
-                })
-        
-        return {
-            "entity": entity,
-            "outgoing_relationships": outgoing,
-            "incoming_relationships": incoming,
-            "total_connections": len(incoming) + len(outgoing)
         }
     
     def find_paths(self, source: str, target: str, max_length: int = 3) -> List[List[str]]:
@@ -526,46 +292,10 @@ class GraphRetrievalSystem:
         
         return list(related)
     
-    def semantic_search(self, query: str) -> Dict[str, Any]:
-        """
-        Semantic search across entities, relationships, and evidence
-        """
-        query = query.lower()
-        results = {
-            "query": query,
-            "entities": [],
-            "relationships": [],
-            "evidence": [],
-            "suggestions": []
-        }
-        
-        # Search entities
-        entity_matches = self.search_entities(query)
-        results["entities"] = entity_matches
-        
-        # Search relationships
-        rel_matches = self.search_relationships(query)
-        results["relationships"] = rel_matches
-        
-        # Search evidence
-        evidence_matches = self.search_evidence(query)
-        results["evidence"] = evidence_matches
-        
-        # Generate suggestions
-        if entity_matches:
-            for entity in entity_matches[:3]:  # Only take the first three entities
-                rel_info = self.get_entity_relationships(entity)
-                results["suggestions"].append({
-                    "entity": entity,
-                    "connections": rel_info["total_connections"]
-                })
-        
-        return results
-
     def smart_search(self, query: str, top_k: int = 10) -> Dict[str, Any]:
         """
         Prefer vector-based semantic retrieval; fall back to keyword search when unavailable.
-        Returns the same structure as semantic_search for display reuse.
+        Returns the same structure as keyword_search for display reuse.
         """
         # Vector retrieval path
         if self._entity_embeddings is not None or self._edge_embeddings is not None:
@@ -591,7 +321,7 @@ class GraphRetrievalSystem:
                         })
                 return results
         # Fallback to keyword search
-        return self.semantic_search(query)
+        return self.keyword_search(query)
     
     def interactive_search(self):
         """
@@ -616,10 +346,10 @@ class GraphRetrievalSystem:
                 if command.lower() == 'quit':
                     break
                 elif command.lower() == 'stats':
-                    self.show_stats()
+                    GraphPresenter.show_stats(self.G)
                 elif command.startswith('search '):
                     query = command[7:].strip()
-                    self.display_search_results(self.smart_search(query))
+                    GraphPresenter.display_search_results(self.smart_search(query))
                 elif command.startswith('ssearch '):
                     query = command[8:].strip()
                     res = self.semantic_vector_search(query)
@@ -637,21 +367,21 @@ class GraphRetrievalSystem:
                                 print(f"  {i+1}. {s} --[{attrs.get('relationship','')}]--> {t}")
                 elif command.startswith('entity '):
                     entity = command[7:].strip()
-                    self.display_entity_info(self.get_entity_relationships(entity))
+                    GraphPresenter.display_entity_info(self.get_entity_relationships(entity))
                 elif command.startswith('path '):
                     parts = command[5:].strip().split()
                     if len(parts) >= 2:
                         source, target = parts[0], parts[1]
-                        self.display_paths(self.find_paths(source, target))
+                        GraphPresenter.display_paths(self.find_paths(source, target))
                     else:
                         print("Usage: path <source> <target>")
                 elif command.startswith('related '):
                     entity = command[8:].strip()
                     related = self.get_related_entities(entity)
-                    self.display_related_entities(entity, related)
+                    GraphPresenter.display_related_entities(entity, related)
                 elif command.startswith('search_node_and_edge '):
                     query = command[18:].strip()
-                    self.display_search_node_and_edge(self.search_similar_node_and_edge(query))
+                    GraphPresenter.display_search_node_and_edge(self.search_similar_node_and_edge(query))
                 else:
                     print("Unknown command, please try again")
                 
@@ -662,163 +392,6 @@ class GraphRetrievalSystem:
             except Exception as e:
                 print(f"Error: {e}")
     
-    def parse_llm_json_output(self, chat_simple: str):
-        """
-        Parse a JSON object from LLM output.
-        Supports:
-        - Pure JSON text
-        - JSON wrapped in ```json ... ``` or ``` ... ```
-        - Extra descriptive text surrounding the JSON
-
-        Args:
-            chat_simple (str): Raw LLM response string
-        Returns:
-            object: Parsed Python object (list or dict)
-        """
-        if not chat_simple or not isinstance(chat_simple, str):
-            return None
-
-        # Extract ```json ... ``` or ``` ... ``` code blocks
-        code_blocks = re.findall(r"```(?:json)?(.*?)```", chat_simple, re.DOTALL)
-        if code_blocks:
-            for block in code_blocks:
-                try:
-                    return json.loads(block.strip())
-                except json.JSONDecodeError:
-                    continue  # Try the next block
-
-        # No code block? Try parsing the full string
-        try:
-            return json.loads(chat_simple.strip())
-        except json.JSONDecodeError:
-            pass
-
-        # Try extracting the first valid JSON segment (starts with [ or {)
-        json_candidates = re.findall(r"(\{.*\}|\[.*\])", chat_simple, re.DOTALL)
-        for candidate in json_candidates:
-            try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-
-        print("❌ Unable to parse valid JSON from LLM output")
-        return None
-
-    def display_search_results(self, results):
-        """
-        Display search results
-        """
-        print(f"\n=== Search results: '{results['query']}' ===")
-        
-        if results['entities']:
-            print(f"\nFound {len(results['entities'])} related entities:")
-            for entity in results['entities'][:5]:  # Show only the first five
-                print(f"  • {entity}")
-        
-        if results['relationships']:
-            print(f"\nFound {len(results['relationships'])} related relationships:")
-            for source, target, attrs in results['relationships'][:3]:  # Show only the first three
-                print(f"  • {source} --[{attrs.get('relationship', '')}]--> {target}")
-        
-        if results['evidence']:
-            print(f"\nFound {len(results['evidence'])} related evidence snippets:")
-            for source, target, attrs in results['evidence'][:3]:  # Show only the first three
-                evidence = attrs.get('evidence', '')[:100]
-                print(f"  • {evidence}...")
-        
-        if results['suggestions']:
-            print(f"\nSuggested entities:")
-            for suggestion in results['suggestions']:
-                print(f"  • {suggestion['entity']} ({suggestion['connections']} connections)")
-    
-    def display_entity_info(self, info):
-        """
-        Display entity information
-        """
-        if 'error' in info:
-            print(f"Error: {info['error']}")
-            return
-        
-        print(f"\n=== Entity: {info['entity']} ===")
-        print(f"Total connections: {info['total_connections']}")
-        
-        if info['outgoing_relationships']:
-            print(f"\nOutgoing relationships ({len(info['outgoing_relationships'])}):")
-            for rel in info['outgoing_relationships']:
-                print(f"  → {rel['target']} ({rel['relationship']})")
-                print(f"    Evidence: {rel['evidence'][:100]}...")
-        
-        if info['incoming_relationships']:
-            print(f"\nIncoming relationships ({len(info['incoming_relationships'])}):")
-            for rel in info['incoming_relationships']:
-                print(f"  ← {rel['source']} ({rel['relationship']})")
-                print(f"    Evidence: {rel['evidence'][:100]}...")
-    
-    def display_paths(self, paths):
-        """
-        Display paths
-        """
-        if not paths:
-            print("No paths found")
-            return
-        
-        print(f"\nFound {len(paths)} paths:")
-        for i, path in enumerate(paths[:5]):  # Show only the first five
-            print(f"  Path {i+1}: {' -> '.join(path)}")
-    
-    def display_related_entities(self, entity, related):
-        """
-        Display related entities
-        """
-        print(f"\n=== Related entities for {entity} ===")
-        if not related:
-            print("No related entities found")
-            return
-        
-        print(f"Found {len(related)} related entities:")
-        for i, rel_entity in enumerate(related[:10]):  # Show only the first ten
-            print(f"  {i+1}. {rel_entity}")
-
-    def display_search_node_and_edge(self, results):
-        """
-        Display combined node-edge search results
-        """
-        if not results:
-            print("No related results found")
-            return
-        
-        print(f"\n=== Node-edge-node search results ===")
-        print(f"Found {len(results)} related results:")
-        
-        for i, result in enumerate(results[:10]):  # Show only the first ten
-            print(f"\nResult {i+1}:")
-            print(f"  Source node: {result['source_node']}")
-            print(f"  Target node: {result['target_node']}")
-            print(f"  Relationship: {result['edge']}")
-            print(f"  Evidence: {result['evidence']}")
-            print(f"  Node similarity: {result['node_similarity']:.4f}")
-            print(f"  Edge similarity: {result['edge_similarity']:.4f}")
-            if result['paper_id']:
-                print(f"  Paper ID: {result['paper_id']}")
-            if result['review_id']:
-                print(f"  Review ID: {result['review_id']}")
-    
-    def show_stats(self):
-        """
-        Display graph statistics
-        """
-        print(f"\n=== Graph statistics ===")
-        print(f"Nodes: {self.G.number_of_nodes()}")
-        print(f"Edges: {self.G.number_of_edges()}")
-        print(f"Weakly connected components: {nx.number_weakly_connected_components(self.G)}")
-        
-        # Node degree stats
-        degrees = dict(self.G.degree())
-        top_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)[:5]
-        print(f"\nMost connected nodes:")
-        for node, degree in top_nodes:
-            print(f"  {node}: {degree} connections")
-
     def search_similar_node(self, query: str, k: int = 10) -> List[Dict[str, Any]]:
         """
         Retrieve the top-k nodes by semantic similarity.
@@ -830,7 +403,7 @@ class GraphRetrievalSystem:
 
         # 1. Build the query vector
         try:
-            q_vec = embed_texts([query], model='BAAI/bge-m3')[0]
+            q_vec = self.embedding_manager.embed_texts([query], model='BAAI/bge-m3')[0]
         except Exception:
             return []
 
@@ -841,7 +414,6 @@ class GraphRetrievalSystem:
             self._entity_names, 
             k=k
         )
-
 
     def search_similar_edge(self, query: str, k: int = 10) -> List[Dict[str, Any]]:
         """
@@ -866,7 +438,7 @@ class GraphRetrievalSystem:
         
         # Build the query vector
         try:
-            q_vec = embed_texts([query], model='BAAI/bge-m3')[0]
+            q_vec = self.embedding_manager.embed_texts([query], model='BAAI/bge-m3')[0]
         except Exception:
             return []
         
@@ -888,7 +460,7 @@ class GraphRetrievalSystem:
         
         # Build the query vector
         try:
-            q_vec = embed_texts([query], model='BAAI/bge-m3')[0]
+            q_vec = self.embedding_manager.embed_texts([query], model='BAAI/bge-m3')[0]
         except Exception:
             return []
         
@@ -988,7 +560,7 @@ class GraphRetrievalSystem:
             # 7. An edge_query is provided → compute semantic similarity
             if self._edge_embeddings is not None:
                 try:
-                    edge_q_vec = embed_texts([edge_query], model='BAAI/bge-m3')[0]
+                    edge_q_vec = self.embedding_manager.embed_texts([edge_query], model='BAAI/bge-m3')[0]
                 except Exception:
                     continue
 
@@ -996,7 +568,7 @@ class GraphRetrievalSystem:
                 for source, target, attrs in node_edges:
                     edge_text = f"EDGE: {source} --[{attrs.get('relationship', '')}]--> {target}. EVIDENCE: {attrs.get('evidence', '')}"
                     try:
-                        edge_vec = embed_texts([edge_text], model='BAAI/bge-m3')[0]
+                        edge_vec = self.embedding_manager.embed_texts([edge_text], model='BAAI/bge-m3')[0]
                         dot_product = sum(a * b for a, b in zip(edge_q_vec, edge_vec))
                         query_norm = sum(a * a for a in edge_q_vec) ** 0.5
                         vec_norm = sum(a * a for a in edge_vec) ** 0.5
@@ -1101,6 +673,49 @@ class GraphRetrievalSystem:
                 frontier = next_level
 
         return collected
+    
+    def parse_llm_json_output(self, chat_simple: str):
+        """
+        Parse a JSON object from LLM output.
+        Supports:
+        - Pure JSON text
+        - JSON wrapped in ```json ... ``` or ``` ... ```
+        - Extra descriptive text surrounding the JSON
+
+        Args:
+            chat_simple (str): Raw LLM response string
+        Returns:
+            object: Parsed Python object (list or dict)
+        """
+        if not chat_simple or not isinstance(chat_simple, str):
+            return None
+
+        # Extract ```json ... ``` or ``` ... ``` code blocks
+        code_blocks = re.findall(r"```(?:json)?(.*?)```", chat_simple, re.DOTALL)
+        if code_blocks:
+            for block in code_blocks:
+                try:
+                    return json.loads(block.strip())
+                except json.JSONDecodeError:
+                    continue  # Try the next block
+
+        # No code block? Try parsing the full string
+        try:
+            return json.loads(chat_simple.strip())
+        except json.JSONDecodeError:
+            pass
+
+        # Try extracting the first valid JSON segment (starts with [ or {)
+        json_candidates = re.findall(r"(\{.*\}|\[.*\])", chat_simple, re.DOTALL)
+        for candidate in json_candidates:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+
+        print("❌ Unable to parse valid JSON from LLM output")
+        return None
+
 
 def main():
     """

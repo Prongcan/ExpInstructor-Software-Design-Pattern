@@ -5,8 +5,9 @@ import multiprocessing as mp
 from typing import Optional
 from tqdm import tqdm
 from functools import partial
-from RAG_single import rag_pipeline_with_retrieval_system, generate_novelty_score
-from RAG_single import EvidenceRetrievalSystem
+from RAG_single import rag_pipeline_with_retrieval_system
+from RAG_baseline_review_sentence.retrieval_system import EvidenceRetrievalSystem
+from Evaluation_utils.eval_novelty import generate_novelty_score
 
 # Global retrieval system variable for multiprocessing
 global_retrieval_system = None

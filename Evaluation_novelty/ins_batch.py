@@ -7,8 +7,8 @@ import os, sys
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
-from Evaluation_significance.ins_single import generate_significance_evaluation_via_agent
-from Evaluation_utils.eval_significance import generate_significance_score
+from ins_single import generate_novelty_evaluation_via_agent
+from Evaluation_utils.eval_novelty import generate_novelty_score
 from ins_model import create_custom_agent
 
 # Global agent variable for multiprocessing
@@ -85,10 +85,10 @@ def process_single_item(item_data):
             - id: Item ID
             - status: Status ("success", "error", "skipped")
             - golden_score: Golden standard score (from all_scores field, format like "3 5")
-            - significance_evaluation: Significance evaluation text
-            - raw_resp_idea: Original evaluation response (same as significance_evaluation)
-            - significance_score: Extracted score (integer 1-10, or None)
-            - significance_score_raw_resp: Original scoring response text
+            - novelty_evaluation: Novelty evaluation text
+            - raw_resp_idea: Original evaluation response (same as novelty_evaluation)
+            - novelty_score: Extracted score (integer 1-10, or None)
+            - novelty_score_raw_resp: Original scoring response text
             - error: Error message (if any)
     """
     global global_agent
@@ -103,49 +103,49 @@ def process_single_item(item_data):
                 "id": item_id,
                 "status": "skipped",
                 "golden_score": golden_score,
-                "significance_evaluation": "",
+                "novelty_evaluation": "",
                 "raw_resp_idea": None,
-                "significance_score": None,
-                "significance_score_raw_resp": None,
+                "novelty_score": None,
+                "novelty_score_raw_resp": None,
                 "error": None
             }
         
-        # Generate significance evaluation
-        significance_evaluation = generate_significance_evaluation_via_agent(global_agent, raw_idea)
-        print(f"[{item_id}] Significance evaluation generated!")
+        # Generate novelty evaluation
+        novelty_evaluation = generate_novelty_evaluation_via_agent(global_agent, raw_idea)
+        print(f"[{item_id}] Novelty evaluation generated!")
         
         # Check if evaluation generation failed
-        if not significance_evaluation or significance_evaluation.startswith("ERROR"):
+        if not novelty_evaluation or novelty_evaluation.startswith("ERROR"):
             return {
                 "id": item_id,
                 "status": "error",
                 "golden_score": golden_score,
-                "significance_evaluation": significance_evaluation or "",
-                "raw_resp_idea": significance_evaluation if significance_evaluation else None,
-                "significance_score": None,
-                "significance_score_raw_resp": None,
-                "error": "Error generating significance evaluation"
+                "novelty_evaluation": novelty_evaluation or "",
+                "raw_resp_idea": novelty_evaluation if novelty_evaluation else None,
+                "novelty_score": None,
+                "novelty_score_raw_resp": None,
+                "error": "Error generating novelty evaluation"
             }
         
-        # Perform significance scoring
-        significance_score_raw_resp = generate_significance_score(significance_evaluation)
-        print(f"[{item_id}] Significance scoring completed!")
+        # Perform novelty scoring
+        novelty_score_raw_resp = generate_novelty_score(novelty_evaluation)
+        print(f"[{item_id}] Novelty scoring completed!")
         
         # Extract score from response
-        significance_score = extract_score_from_response(significance_score_raw_resp)
+        novelty_score = extract_score_from_response(novelty_score_raw_resp)
         
         # If score extraction fails, log warning but don't mark as error
-        if significance_score is None:
+        if novelty_score is None:
             print(f"[{item_id}] Warning: Unable to extract score from response")
 
         return {
             "id": item_id,
             "status": "success",
             "golden_score": golden_score,
-            "significance_evaluation": significance_evaluation,
-            "raw_resp_idea": significance_evaluation,  # Original response is the evaluation text
-            "significance_score": significance_score,
-            "significance_score_raw_resp": significance_score_raw_resp,
+            "novelty_evaluation": novelty_evaluation,
+            "raw_resp_idea": novelty_evaluation,  # Original response is the evaluation text
+            "novelty_score": novelty_score,
+            "novelty_score_raw_resp": novelty_score_raw_resp,
             "error": None
         }
         
@@ -154,10 +154,10 @@ def process_single_item(item_data):
             "id": item_data.get("id", "unknown"),
             "status": "error",
             "golden_score": item_data.get("all_scores", ""),
-            "significance_evaluation": None,
+            "novelty_evaluation": None,
             "raw_resp_idea": None,
-            "significance_score": None,
-            "significance_score_raw_resp": None,
+            "novelty_score": None,
+            "novelty_score_raw_resp": None,
             "error": str(e)
         }
 
@@ -224,10 +224,10 @@ def save_results(results, output_dir):
 
 def main():
     # Input file path
-    input_file = "Evaluation_significance/significance_data/Stanford_comments_with_ideas_and_scores.json"
+    input_file = "novelty_data/Stanford_comments_with_ideas_and_scores.json"
     
     # Output directory
-    output_dir = "Evaluation_significance/results/instructor"
+    output_dir = "results/instructor"
     
     # Number of parallel processes
     num_processes = 10

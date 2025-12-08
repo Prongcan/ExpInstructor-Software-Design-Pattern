@@ -5,7 +5,8 @@ import re
 from typing import Optional
 from tqdm import tqdm
 from functools import partial
-from GPT_single import generate_significance_evaluation, generate_significance_score
+from GPT_single import generate_significance_evaluation
+from Evaluation_utils.eval_significance import generate_significance_score
 
 
 def extract_score_from_response(response_text: str) -> Optional[int]:

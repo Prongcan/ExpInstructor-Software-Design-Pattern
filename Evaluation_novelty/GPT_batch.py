@@ -5,7 +5,8 @@ import re
 from typing import Optional
 from tqdm import tqdm
 from functools import partial
-from GPT_single import generate_novelty_evaluation, generate_novelty_score
+from GPT_single import generate_novelty_evaluation
+from Evaluation_utils.eval_novelty import generate_novelty_score
 
 
 def extract_score_from_response(response_text: str) -> Optional[int]:
